@@ -276,7 +276,7 @@ export class GameSimulation {
     const spawnX = x ?? this.rng.between(40, GAME_WIDTH - 40);
     const spawnY = y ?? -displaySize / 2;
 
-    const angleDeg = this.rng.between(-70, 70);
+    const angleDeg = this.rng.between(-30, 30);
     const rad = (angleDeg * Math.PI) / 180;
     const speed = this.rng.between(ROCK_SPEED_MIN, ROCK_SPEED_MAX);
 

@@ -251,7 +251,7 @@ server every 50 ms and are interpolated visually. Only the **cannon** is
 predicted, because it is the object the player directly controls and where
 input lag is most perceptible.
 
-### How it works
+### Cannon prediction — direct snap
 
 ```
 Client predicts:  ──────────────────────────────►  (what you see, ~0ms lag)
@@ -261,8 +261,7 @@ Server corrects:  ────────┬────────┬──�
 
 The cannon uses **direct snap** prediction: the client sets the cannon position
 to the pointer position immediately on the same frame the input is received —
-no lerp, no interpolation. The server mirrors this exactly (instant snap, no
-lerp either).
+no lerp, no interpolation. The server mirrors this exactly.
 
 ```ts
 // Client (GameScene.ts) — same frame as mousemove
@@ -272,15 +271,50 @@ predictedCannonX = clamp(pointerGameX, CANNON_BOUND_LEFT, CANNON_BOUND_RIGHT);
 cannonX = clamp(pointerX, CANNON_BOUND_LEFT, CANNON_BOUND_RIGHT);
 ```
 
-When a server tick arrives, the difference between the server's position and
-the predicted position is stored as `serverCorrection`. That correction bleeds
-out at 20% per frame (~3 frames, ~50 ms), making corrections invisible.
+When a server tick arrives, the difference between the server's authoritative
+position and the predicted position is stored as `serverCorrection`. That
+correction bleeds out at 20% per frame (~3 frames, ~50 ms), making any
+divergence invisible.
 
-### Why this is safe
+### Input coalescing
 
-Prediction only affects the rendered cannon sprite. It has zero influence on:
+`mousemove` fires hundreds of times per second at high DPI. Rather than
+sending a WebSocket message on every event (which would flood the connection),
+the client sets an `inputDirty` flag on each move and flushes exactly one
+message per animation frame in `update()`. Press and release events still send
+immediately for lowest possible latency on state changes.
 
-- When lasers fire (server timer)
+### Rock and laser interpolation
+
+Rocks and lasers are rendered by interpolating between the two most recent
+server snapshots:
+
+```
+prevState ──────────────────────► nextState
+          alpha: 0 ─────────── 1
+```
+
+`interpAlpha` advances from 0 to 1 over `tickMs` milliseconds each frame.
+If a server tick arrives late, `interpAlpha` is allowed to slightly overshoot
+to `1.2` — objects continue extrapolating along their last known trajectory
+rather than freezing in place.
+
+`tickMs` is not hardcoded. It is updated every tick using an exponential moving
+average of actual inter-arrival times (`0.9 × old + 0.1 × measured`), so the
+interpolation window adapts to the real server cadence automatically.
+
+### Shoot-unlock prediction
+
+The server withholds firing for the first 2 seconds (grace period). The client
+mirrors this with a local `performance.now()` timer started when the game phase
+first becomes `'playing'`, rather than waiting to see a laser appear in the
+server state. This removes up to one full tick (50 ms) of unlock lag.
+
+### Why prediction is safe
+
+Prediction only affects rendered sprite positions. It has zero influence on:
+
+- When lasers fire (server accumulator)
 - Whether a laser hits a rock (server collision)
 - The player's score (server only)
 
@@ -351,9 +385,10 @@ metered mobile connections and reduces server CPU for JSON serialisation.
 
 **Adaptive tick rate**
 Drop to 10 Hz during low-action phases (no rocks, no lasers) and increase to
-30 Hz during intense moments. The client interpolation already handles
-variable tick cadence — `tickMs` can be derived from message timestamps
-rather than a hardcoded constant.
+30 Hz during intense moments. The client interpolation already handles variable
+tick cadence — `tickMs` is already derived from measured inter-arrival times
+on the client, so no client changes are needed; only the server broadcast
+interval would change.
 
 **Asset preloading / caching**
 Phaser loads assets on first `preload()`. On a platform with many games,
